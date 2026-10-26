@@ -269,14 +269,10 @@ def register(mcp: FastMCP) -> None:
         if not related_workitem_id:
             return missing(action, "related_workitem_id")
         if is_dependency:
-            # /dependencies/{id}/ 404s on self-hosted CE (#185). The public
-            # relations removal route is the documented replacement
-            # (makeplane/plane#10091), but no released Plane version
-            # registers it yet, so this still 404s on self-hosted CE until
-            # the server ships that route. relations.delete() already posts
-            # to that exact URL -- its base _build_url() normalizes the
-            # trailing slash regardless of what the endpoint literal has --
-            # so no hand-rolled _post is needed here.
+            # /dependencies/{id}/ 404s on self-hosted CE (#185); the removal
+            # route is the documented replacement (makeplane/plane#10091), but
+            # no released Plane registers it yet, so CE 404s until the server
+            # ships it. That 404 is a server limitation, not a caller mistake.
             try:
                 client.work_items.relations.delete(
                     workspace_slug=workspace_slug,
