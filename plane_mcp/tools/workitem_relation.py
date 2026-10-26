@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Literal, get_args
 
 from fastmcp import FastMCP
-from pydantic import ValidationError
+from fastmcp.exceptions import ToolError
 from plane.errors.errors import HttpError
 from plane.models.work_item_relation_definitions import (
     CreateWorkItemRelationDefinition,
@@ -24,6 +24,7 @@ from plane.models.work_items import (
     DependencyTypeEnum,
     RemoveWorkItemRelation,
 )
+from pydantic import ValidationError
 
 from plane_mcp.client import get_plane_client_context
 from plane_mcp.toolkit import (
@@ -211,10 +212,7 @@ def register(mcp: FastMCP) -> None:
                     f"{workspace_slug}/projects/{project_id}/work-items/{workitem_id}/relations"
                 )
                 dependencies = {
-                    relation_type: [
-                        entry if isinstance(entry, str) else entry.get("issue_id")
-                        for entry in entries
-                    ]
+                    relation_type: [entry if isinstance(entry, str) else entry.get("issue_id") for entry in entries]
                     for relation_type, entries in (relations_payload or {}).items()
                 }
             try:
@@ -273,12 +271,28 @@ def register(mcp: FastMCP) -> None:
         if is_dependency:
             # /dependencies/{id}/ 404s on self-hosted CE (#185). The public
             # relations removal route is the documented replacement
-            # (makeplane/plane#10091). plane-sdk 0.3.1 drops the trailing
-            # slash that route needs, so post to it directly.
-            client.work_items.relations._post(
-                f"{workspace_slug}/projects/{project_id}/work-items/{workitem_id}/relations/remove/",
-                RemoveWorkItemRelation(related_issue=related_workitem_id).model_dump(exclude_none=True),
-            )
+            # (makeplane/plane#10091), but no released Plane version
+            # registers it yet, so this still 404s on self-hosted CE until
+            # the server ships that route. relations.delete() already posts
+            # to that exact URL -- its base _build_url() normalizes the
+            # trailing slash regardless of what the endpoint literal has --
+            # so no hand-rolled _post is needed here.
+            try:
+                client.work_items.relations.delete(
+                    workspace_slug=workspace_slug,
+                    project_id=project_id,
+                    work_item_id=workitem_id,
+                    data=RemoveWorkItemRelation(related_issue=related_workitem_id),
+                )
+            except HttpError as exc:
+                if exc.status_code != 404:
+                    raise
+                raise ToolError(
+                    "Removing a dependency relation is not supported on this Plane "
+                    "server: the relation-removal endpoint (makeplane/plane#10091) "
+                    "is not registered here. This is a Plane CE server limitation, "
+                    "not an MCP bug -- remove the relation from the Plane UI instead."
+                ) from exc
             return None
         client.work_items.custom_relations.remove(
             workspace_slug=workspace_slug,

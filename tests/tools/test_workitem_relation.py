@@ -13,8 +13,9 @@ already did before this change.
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
+from fastmcp.exceptions import ToolError
 from plane.errors.errors import HttpError
+from pydantic import ValidationError
 
 
 def _call(registered, **kwargs):
@@ -137,10 +138,10 @@ def test_create_custom_relation_is_unaffected_by_the_route_change(registered, sp
     assert sent.work_item_ids == ["t1"]
 
 
-# --- delete: a dependency removal must use /relations/remove + related_issue ---
+# --- delete: a dependency removal must use relations.delete() + related_issue ---
 
 
-def test_delete_dependency_posts_to_the_relations_remove_route(registered, spy):
+def test_delete_dependency_uses_relations_delete_not_dependencies(registered, spy):
     _call(
         registered,
         action="delete",
@@ -149,10 +150,8 @@ def test_delete_dependency_posts_to_the_relations_remove_route(registered, spy):
         related_workitem_id="t1",
         is_dependency=True,
     )
-    assert "work_items.relations._post" in spy.recorder.methods
+    assert "work_items.relations.delete" in spy.recorder.methods
     assert "work_items.dependencies.remove" not in spy.recorder.methods
-    endpoint = spy.recorder.only().kwargs["endpoint"]
-    assert endpoint.endswith("/relations/remove/"), endpoint
 
 
 def test_delete_dependency_sends_related_issue_in_the_body(registered, spy):
@@ -165,7 +164,40 @@ def test_delete_dependency_sends_related_issue_in_the_body(registered, spy):
         is_dependency=True,
     )
     sent = spy.recorder.only().kwargs["data"]
-    assert sent == {"related_issue": "t1"}
+    assert sent.related_issue == "t1"
+    assert sent.model_dump(exclude_none=True) == {"related_issue": "t1"}
+
+
+def test_delete_dependency_404_raises_unsupported_operation_error(registered, spy):
+    """No released Plane version registers the relations/remove route yet
+
+    (makeplane/plane#10091 adds it). A 404 there must surface as a clear,
+    actionable error -- not the raw SDK HttpError -- so the caller knows this
+    is a server limitation, not something wrong with the request.
+    """
+    spy.returns["work_items.relations.delete"] = HttpError("nope", status_code=404)
+    with pytest.raises(ToolError, match="not supported on this Plane server"):
+        _call(
+            registered,
+            action="delete",
+            project_id="p",
+            workitem_id="w",
+            related_workitem_id="t1",
+            is_dependency=True,
+        )
+
+
+def test_delete_dependency_propagates_non_404_errors(registered, spy):
+    spy.returns["work_items.relations.delete"] = HttpError("boom", status_code=500)
+    with pytest.raises(HttpError):
+        _call(
+            registered,
+            action="delete",
+            project_id="p",
+            workitem_id="w",
+            related_workitem_id="t1",
+            is_dependency=True,
+        )
 
 
 def test_delete_custom_relation_is_unaffected_by_the_route_change(registered, spy):
